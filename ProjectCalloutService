@@ -1,0 +1,79 @@
+global class ProjectCalloutService {
+    //method that will be invoked by Process Builder
+    public static String serviceToken = ServiceTokens__c.getValues('ProjectServiceToken').Token__c;        
+    @InvocableMethod(label='Post Opportunity To PMS' description='invokes a callout to asynchronousially update a PMS record.')
+    public static void PostOpportunityToPMS(List<Id> opportunityIDs) {
+        Opportunity opp =[Select Id , Name ,Account.Name, CloseDate, Amount from Opportunity where id = :opportunityIDs[0] ];
+            
+        JSON2Apex rqobj = new JSON2Apex();
+        rqobj.opportunityId = opp.id;
+        rqobj.opportunityName = opp.Name;
+        rqobj.accountName = opp.Account.Name;
+        rqobj.closeDate = String.Valueof(opp.CloseDate);
+        rqobj.amount = Integer.valueof(opp.Amount); 
+        
+        String jsonInput = JSON.serialize(rqobj);
+        
+        System.enqueueJob(new QueueablePMSCall(serviceToken, jsonInput, opp.Id));
+        
+    }
+    
+    //Implement QueueablePMSCall 
+    class QueueablePMSCall implements System.Queueable, Database.AllowsCallouts{
+        private String jsonInput;
+        private String serviceToken;
+        private Id oppId;
+        
+        public QueueablePMSCall (String serviceToken, String jsonInput, Id oppId ){
+            this.jsonInput = jsonInput;
+            this.serviceToken = serviceToken;
+            this.oppId = oppId;
+        }
+        public void execute (QueueableContext qc){
+            postToPMS(jsonInput,serviceToken, oppId);            
+        }
+    }
+    
+    
+    
+    // invoke future callout method
+    // 
+    @future(callout=true)
+    private static void postToPMS(String serviceToken, String jsonInput, Id oppId ){
+        httpRequest req = new httpRequest();
+        //set the endpoint to Named Credentials ProjectService          
+        req.setEndpoint('callout:ProjectService');
+        req.setHeader('token', serviceToken);
+        req.setHeader('Content-Type', 'application/json');
+        req.setMethod('POST');       
+        req.setBody(jsonInput);
+        
+        //identify response
+        HTTP http = new http();
+        HTTPResponse res = http.send(req);
+        System.debug('Body: '+res.getBody());
+        
+        //save respnse into the Opportunity record
+        Opportunity opp = new Opportunity(id=oppID);
+        if (res.getStatusCode()==201){
+            opp.StageName = 'Submitted Project';
+            system.debug('Status Code' + res.getStatusCode());
+        } else{
+            opp.StageName = 'Resubmit Project';
+            system.debug('Status Code ' + res.getStatusCode() + ' ' + res.getStatus());        
+        }
+        update opp;
+    }
+ 	//public JSON2Apex class helps wrap up JSON response   
+    public class JSON2Apex {
+            public String opportunityId;
+            public String opportunityName;
+            public  String accountName;
+            public String closeDate;
+            public Integer amount;
+}
+    
+    
+    
+    
+}
